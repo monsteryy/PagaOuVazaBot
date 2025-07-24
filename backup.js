@@ -10,7 +10,7 @@ dotenv.config();
 // Carrega tokens do .env
 const bot = new Telegraf(process.env.TELEGRAM_TOKEN);
 
-const OPENAI_API_KEY = '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';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 let conversationHistory = [];
 
