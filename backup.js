@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import PDFDocument from 'pdfkit';
 import { Telegraf } from 'telegraf';
 import fetch from 'node-fetch';
 import fs from 'fs';
@@ -106,6 +107,48 @@ agendarResumoSemanal(bot);
 
 // Handler principal de mensagens
 bot.on('text', async (ctx) => {
+  // Comando secreto de zoeira
+  if (/tô pobre|to pobre|tô liso|to liso|tô quebrado|to quebrado|tô duro|to duro/i.test(text)) {
+    const zoeiras = [
+      'Rapha, tu tá tão liso que se tropeçar cai em débito.',
+      'Tá mais seco que piscina de hotel barato!',
+      'Se pedir fiado no pastel da feira, o cara te dá só o guardanapo!',
+      'Tua conta tá igual praia em dia de chuva: só areia!',
+      'Se continuar assim, vai ter que pedir dinheiro pro pipoqueiro da esquina!',
+      'Rapha, tu tá mais duro que pão de ontem!',
+      'Nem o Uber aceita tua corrida, só se for a pé!'
+    ];
+    const resposta = zoeiras[Math.floor(Math.random() * zoeiras.length)];
+    await ctx.reply(resposta);
+    return;
+  }
+  // Comando gerar relatório em PDF
+  if (/gerar relatório|exportar dados|relatório pdf/i.test(text)) {
+    const data = loadData();
+    const mesAtual = new Date().getMonth();
+    const gastosMes = data.gastos.filter(g => new Date(g.data).getMonth() === mesAtual);
+    if (gastosMes.length === 0) {
+      await ctx.reply('Nenhum gasto registrado este mês para gerar relatório.');
+      return;
+    }
+    // Gerar PDF
+    const doc = new PDFDocument();
+    const chunks = [];
+    doc.on('data', chunk => chunks.push(chunk));
+    doc.on('end', async () => {
+      const pdfBuffer = Buffer.concat(chunks);
+      await ctx.replyWithDocument({ source: pdfBuffer, filename: 'relatorio_gastos.pdf' });
+    });
+    doc.fontSize(18).text('Relatório de Gastos do Mês', { align: 'center' });
+    doc.moveDown();
+    gastosMes.forEach((g, i) => {
+      doc.fontSize(12).text(
+        `${i + 1}. R$${g.valor.toFixed(2)} - ${g.descricao} [${g.categoria || 'outros'}] (${new Date(g.data).toLocaleDateString()})`
+      );
+    });
+    doc.end();
+    return;
+  }
   const userId = ctx.message.from.id;
   const text = ctx.message.text?.trim();
   if (!text) return;
@@ -161,18 +204,27 @@ bot.on('text', async (ctx) => {
   // Comando /ajuda
   if (/^\/ajuda$/i.test(text)) {
     await ctx.reply(
-      `Comandos disponíveis:\n` +
-      `/ajuda - Lista todos os comandos\n` +
-      `adicionar gasto - Inicia diálogo para inserir gasto\n` +
-      `meus gastos ou gastos do mês - Mostra gastos registrados no mês\n` +
-      `paguei ou confirmei o pagamento - Marca uma conta como paga\n` +
-      `resumo da semana - Mostra um resumo dos gastos e alertas de excesso\n` +
-      `planejamento do mês - Mostra as metas e valores esperados para o mês\n` +
-      `quanto posso gastar hoje? - Mostra limite com base no saldo disponível\n` +
-      `gastos com lazer ou besteiras - Mostra quanto foi gasto em lanches, rolês etc\n` +
-      `quanto falta pagar do PS5? - Mostra saldo restante da dívida\n` +
-      `me lembra amanhã de pagar tal coisa - Agenda lembrete de pagamento (lembrete será enviado até confirmação)\n`
-    );
+      `📝 *Comandos do Bot Financeiro*\n\n` +
+      `*Gastos e Pagamentos:*\n` +
+      `• adicionar gasto — Inicia diálogo para inserir gasto\n` +
+      `• meus gastos ou gastos do mês — Mostra gastos registrados no mês\n` +
+      `• pagar ou confirmei o pagamento — Marca uma conta como paga\n` +
+      `• dashboard financeiro — Mostra resumo simplificado do mês\n` +
+      `• gerar relatório — Exporta os gastos do mês em PDF\n\n` +
+      `*Planejamento e Limites:*\n` +
+      `• planejamento do mês — Mostra ou cria metas mensais\n` +
+      `• quanto posso gastar hoje? — Mostra limite diário baseado na meta\n\n` +
+      `*Monitoramento:*\n` +
+      `• gastos com lazer ou besteiras — Mostra quanto foi gasto em lazer/besteiras\n` +
+      `• quanto falta pagar do PS5? — Mostra saldo restante da dívida\n` +
+      `• resumo da semana — Mostra resumo dos gastos e alertas\n\n` +
+      `*Lembretes:*\n` +
+      `• me lembra amanhã de pagar tal coisa — Agenda lembrete automático (enviado até confirmação)\n\n` +
+      `*Zoeira:*\n` +
+      `• tô pobre, tô liso, tô quebrado... — Recebe uma zoeira/meme aleatório\n\n` +
+      `*Ajuda:*\n` +
+      `• /ajuda — Lista todos os comandos\n`
+    , { parse_mode: 'Markdown' });
     return;
   }
 
