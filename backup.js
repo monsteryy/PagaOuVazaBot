@@ -49,6 +49,10 @@ function loadData() {
     const raw = fs.readFileSync('data.json', 'utf8');
     const data = JSON.parse(raw);
     if (!data.lembretes) data.lembretes = [];
+    if (!data.lembretesPersonalizados) data.lembretesPersonalizados = [];
+    if (!data.recorrentes) data.recorrentes = [];
+    if (!data.metasCategorias) data.metasCategorias = {};
+    if (!data.historicoGastos) data.historicoGastos = [];
     return data;
   } catch {
     return { gastos: [], pagamentos: [], planejamento: {}, dividas: {}, lembretes: [] };
@@ -63,6 +67,35 @@ function saveData(data) {
 function enviarLembretes(bot) {
   setInterval(() => {
     const data = loadData();
+    // Lembretes recorrentes (mensais)
+    if (data.recorrentes && data.recorrentes.length > 0) {
+      const hoje = new Date();
+      data.recorrentes.forEach(tarefa => {
+        if (hoje.getDate() === tarefa.dia && hoje.getHours() === tarefa.hora) {
+          bot.telegram.sendMessage(
+            tarefa.userId,
+            `Lembrete recorrente: ${tarefa.descricao} (${tarefa.valor ? 'R$' + tarefa.valor : ''})`
+          );
+        }
+      });
+    }
+    // Lembretes personalizados
+    if (data.lembretesPersonalizados && data.lembretesPersonalizados.length > 0) {
+      const agora = new Date();
+      data.lembretesPersonalizados = data.lembretesPersonalizados.filter(l => {
+        const dataLembrete = new Date(l.dataHora);
+        if (agora >= dataLembrete) {
+          bot.telegram.sendMessage(
+            l.userId,
+            `Lembrete: Não esqueça de pagar ${l.descricao} agora!`
+          );
+          return false; // remove após enviar
+        }
+        return true;
+      });
+      saveData(data);
+    }
+    // Lembretes automáticos
     if (data.lembretes && data.lembretes.length > 0) {
       data.lembretes.forEach(lembrete => {
         bot.telegram.sendMessage(
@@ -71,7 +104,7 @@ function enviarLembretes(bot) {
         );
       });
     }
-  }, 1000 * 60 * 60 * 6); // a cada 6 horas
+  }, 1000 * 60 * 10); // a cada 10 minutos
 }
 enviarLembretes(bot);
 
@@ -107,6 +140,85 @@ agendarResumoSemanal(bot);
 
 // Handler principal de mensagens
 bot.on('text', async (ctx) => {
+  // Lembrete com data/hora personalizada
+  const lembretePersonalizado = text.match(/me lembra de pagar (.+) dia (\d{1,2}) às (\d{1,2})h/i);
+  if (lembretePersonalizado) {
+    const descricao = lembretePersonalizado[1];
+    const dia = parseInt(lembretePersonalizado[2]);
+    const hora = parseInt(lembretePersonalizado[3]);
+    const agora = new Date();
+    let ano = agora.getFullYear();
+    let mes = agora.getMonth();
+    const dataLembrete = new Date(ano, mes, dia, hora);
+    const data = loadData();
+    if (!data.lembretesPersonalizados) data.lembretesPersonalizados = [];
+    data.lembretesPersonalizados.push({ userId: ctx.message.from.id, descricao, dataHora: dataLembrete });
+    saveData(data);
+    await ctx.reply(`Lembrete agendado: pagar ${descricao} dia ${dia} às ${hora}h.`);
+    return;
+  }
+
+  // Tarefa recorrente mensal
+  const recorrenteMatch = text.match(/gasto fixo mensal com (.+) R\$([\d,.]+)/i);
+  if (recorrenteMatch) {
+    const descricao = recorrenteMatch[1];
+    const valor = parseFloat(recorrenteMatch[2].replace(',', '.'));
+    const hoje = new Date();
+    const dia = hoje.getDate();
+    const hora = hoje.getHours();
+    const data = loadData();
+    if (!data.recorrentes) data.recorrentes = [];
+    data.recorrentes.push({ userId: ctx.message.from.id, descricao, valor, dia, hora });
+    saveData(data);
+    await ctx.reply(`Tarefa recorrente criada: ${descricao} todo mês, valor R$${valor.toFixed(2)}.`);
+    return;
+  }
+
+  // Meta por categoria
+  const metaCatMatch = text.match(/limitar\s+(.+)\s+em\s+R\$([\d,.]+)\s+por mês/i);
+  if (metaCatMatch) {
+    const categoria = metaCatMatch[1].toLowerCase();
+    const valor = parseFloat(metaCatMatch[2].replace(',', '.'));
+    const data = loadData();
+    if (!data.metasCategorias) data.metasCategorias = {};
+    data.metasCategorias[categoria] = valor;
+    saveData(data);
+    await ctx.reply(`Meta criada: categoria "${categoria}" limitada em R$${valor.toFixed(2)} por mês.`);
+    return;
+  }
+
+  // Análise de progresso mensal
+  if (/análise de progresso|progresso mensal|comparar mês/i.test(text)) {
+    const data = loadData();
+    const mesAtual = new Date().getMonth();
+    const anoAtual = new Date().getFullYear();
+    // Atualiza histórico
+    const gastosMesAtual = data.gastos.filter(g => {
+      const d = new Date(g.data);
+      return d.getMonth() === mesAtual && d.getFullYear() === anoAtual;
+    });
+    const totalAtual = gastosMesAtual.reduce((acc, g) => acc + g.valor, 0);
+    let totalAnterior = 0;
+    if (data.historicoGastos && data.historicoGastos.length > 0) {
+      const anterior = data.historicoGastos.find(h => h.mes === mesAtual - 1 && h.ano === anoAtual);
+      if (anterior) totalAnterior = anterior.total;
+    }
+    // Salva histórico do mês atual
+    data.historicoGastos = data.historicoGastos.filter(h => h.mes !== mesAtual || h.ano !== anoAtual);
+    data.historicoGastos.push({ mes: mesAtual, ano: anoAtual, total: totalAtual });
+    saveData(data);
+    if (totalAnterior > 0) {
+      const diff = totalAtual - totalAnterior;
+      const perc = ((diff / totalAnterior) * 100).toFixed(1);
+      const msg = diff > 0
+        ? `Você gastou ${perc}% a mais que o mês passado.`
+        : `Você gastou ${Math.abs(perc)}% a menos que o mês passado. Parabéns!`;
+      await ctx.reply(msg);
+    } else {
+      await ctx.reply('Não há dados suficientes do mês anterior para comparar.');
+    }
+    return;
+  }
   // Comando secreto de zoeira
   if (/tô pobre|to pobre|tô liso|to liso|tô quebrado|to quebrado|tô duro|to duro/i.test(text)) {
     const zoeiras = [
@@ -213,13 +325,18 @@ bot.on('text', async (ctx) => {
       `• gerar relatório — Exporta os gastos do mês em PDF\n\n` +
       `*Planejamento e Limites:*\n` +
       `• planejamento do mês — Mostra ou cria metas mensais\n` +
-      `• quanto posso gastar hoje? — Mostra limite diário baseado na meta\n\n` +
+      `• quanto posso gastar hoje? — Mostra limite diário baseado na meta\n` +
+      `• limitar [categoria] em R$valor por mês — Define meta para categoria (ex: limitar lanches em R$100 por mês)\n\n` +
       `*Monitoramento:*\n` +
       `• gastos com lazer ou besteiras — Mostra quanto foi gasto em lazer/besteiras\n` +
       `• quanto falta pagar do PS5? — Mostra saldo restante da dívida\n` +
-      `• resumo da semana — Mostra resumo dos gastos e alertas\n\n` +
+      `• resumo da semana — Mostra resumo dos gastos e alertas\n` +
+      `• análise de progresso — Compara gastos com o mês anterior\n\n` +
       `*Lembretes:*\n` +
-      `• me lembra amanhã de pagar tal coisa — Agenda lembrete automático (enviado até confirmação)\n\n` +
+      `• me lembra amanhã de pagar tal coisa — Agenda lembrete automático (enviado até confirmação)\n` +
+      `• me lembra de pagar [desc] dia [D] às [H]h — Lembrete personalizado (ex: me lembra de pagar aluguel dia 5 às 18h)\n\n` +
+      `*Tarefas Recorrentes:*\n` +
+      `• gasto fixo mensal com [desc] R$valor — Cria tarefa recorrente mensal (ex: gasto fixo mensal com Netflix R$39)\n\n` +
       `*Zoeira:*\n` +
       `• tô pobre, tô liso, tô quebrado... — Recebe uma zoeira/meme aleatório\n\n` +
       `*Ajuda:*\n` +
